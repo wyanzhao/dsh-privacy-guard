@@ -1,0 +1,4 @@
+- insert:
+    - id: local-privacy-guard
+      name: '@local/dsh-privacy-guard'
+      config: {}

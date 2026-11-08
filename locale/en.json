@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Privacy masking",
+    "description": "Automatically replaces matched secrets and personal fields in new prompts with a single asterisk without blocking requests. Local dictionary supported; attachments and existing history are unchanged."
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+coverage/
+*.tgz
+*.log
+.DS_Store
+private-terms.json
+*.local.json
+.env
+.env.*
+.npmrc
+*.pem
+*.key
