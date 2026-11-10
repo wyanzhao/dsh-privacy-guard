@@ -20,14 +20,14 @@ test('missing optional default uses built-ins without a warning', (t) => {
   const state = load();
   assert.equal(state.warning, '');
   assert.equal(state.configured, false);
-  assert.equal(state.redact('sk-' + 'a'.repeat(32)).text, '*');
+  assert.equal(state.redact('sk-' + 'a1B2'.repeat(8)).text, '*');
 });
 test('explicit missing path warns without leaking path or refusing builtin masking', (t) => {
   const path = join(temporary(t), 'missing.json');
   const state = createDictionaryLoader(path)();
   assert.ok(state.warning);
   assert.equal(state.warning.includes(path), false);
-  assert.equal(state.redact('sk-' + 'a'.repeat(32)).text, '*');
+  assert.equal(state.redact('sk-' + 'a1B2'.repeat(8)).text, '*');
 });
 test('last good dictionary survives invalid file, deletion and recovers after repair', (t) => {
   const path = join(temporary(t), 'terms.json');

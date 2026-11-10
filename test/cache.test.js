@@ -5,7 +5,7 @@ import { createRedactor, redactMessages } from '../redactor.js';
 test('admitted history stays byte-identical when new messages append', () => {
   const redact = createRedactor();
   const raw = [
-    { id: 'first', role: 'user', content: [{ type: 'text', text: 'sk-' + 'x'.repeat(32) }] },
+    { id: 'first', role: 'user', content: [{ type: 'text', text: 'sk-' + 'x9Y8'.repeat(8) }] },
   ];
   const history = redactMessages(raw, redact);
   const prefix = JSON.stringify(history);

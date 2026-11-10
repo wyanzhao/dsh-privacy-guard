@@ -56,7 +56,7 @@ test('synthetic JSON corpus stays parseable and stable with literal and built-in
     'line\nvalue',
     '🙂',
     '2468',
-    'sk-' + 'a'.repeat(32),
+    'sk-' + 'a1B2'.repeat(8),
   ];
   const r = createRedactor(['2468', 'escape', 'slash']);
   for (let i = 0; i < 1000; i++) {

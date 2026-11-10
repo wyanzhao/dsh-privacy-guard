@@ -84,7 +84,7 @@ test('activation, optional service changes, disable and re-enable own exact regi
     kind: 'enter',
     startsRequestSeries: true,
     extra: 'preserved',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'sk-' + 'a'.repeat(32) }] }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'sk-' + 'a1B2'.repeat(8) }] }],
   });
   const result = await runtime.listeners.get('agent/pre-step')({}, next);
   assert.equal(result.kind, 'enter');

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-privacy-guard",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local deterministic prompt masking with a single asterisk, without blocking requests.",
   "private": true,
   "repository": {

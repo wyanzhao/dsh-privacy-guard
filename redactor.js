@@ -54,13 +54,96 @@ const fieldLabels = {
 const fieldRules = Object.entries(fieldLabels).map(([type, label]) => ({
   type,
   pattern: new RegExp(
-    '(?<![A-Za-z0-9_])' +
+    '(?<![A-Za-z0-9_])(' +
       label +
-      '(?![A-Za-z0-9_])["\'’”]?[ \\t]*(?:[:=：]|(?:是|为)[ \\t]*[:：=]?|\\bis\\b)[ \\t]*',
+      ')(?![A-Za-z0-9_])["\'’”]?[ \\t]*(?:[:=：]|(?:是|为)[ \\t]*[:：=]?|\\bis\\b)[ \\t]*',
     'gi',
   ),
 }));
 const quotedEnd = { '"': '"', "'": "'", '“': '”', '‘': '’', '`': '`' };
+
+// ---- Code-context exclusions: deterministic, whole-value tests only. ----
+// Type names and annotations are not secrets (`password: string`, `api_key: Optional[str]`).
+const typeNames = new Set(
+  (
+    'string str int integer number float double decimal boolean bool any unknown object void never ' +
+    'bytes bytearray char long short bigint symbol uint int8 int16 int32 int64 uint8 uint16 uint32 ' +
+    'uint64 usize isize u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 String Number Boolean Object Symbol ' +
+    'BigInt Bytes Optional Option Maybe Nullable List Dict Map Set Array Vec Text Any SecretStr ' +
+    'SecretBytes SecretString Secret Password Token None null nil undefined NULL Null Nil'
+  ).split(' '),
+);
+// Member access on well-known code/config objects (`process.env.X`, `os.environ`, `self.token`).
+const codeRoots = new Set(
+  (
+    'process os env ENV self this cls config cfg conf settings ctx context options opts args argv ' +
+    'params props req request res secrets vars inputs credentials creds import window globalThis ' +
+    'global System Environment Deno Bun'
+  ).split(' '),
+);
+const identifierPath = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u;
+// A whole call: `f()`, `vault.read(path)`, `a().b`, or `os.getenv(` cut short by a quoted argument.
+const callExpression =
+  /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\((?:[^()]*\)(?:\.[A-Za-z_$][\w$]*(?:\([^()]*\))?)*)?$/u;
+// Whole-value placeholders; `<...>` can only occur in quoted values (unquoted `<` ends a value).
+const placeholder =
+  /^(?:<[^<>]*>|your[-_ ][\w .-]*|x{3,}|\*{2,}|\.{3,}|…+|change[-_ ]?me|replace[-_ ]?me|placeholder|redacted)$/iu;
+// A single template/environment reference, not a literal mixed with one (`"${user}:literal"` stays masked).
+const reference =
+  /^(?:\$\{\{[^{}]*\}\}|\$\{[^{}]*\}|\$[A-Za-z_]\w*|\{\{[^{}]*\}\}|%[A-Za-z_]\w*%)$/u;
+const pathLike = /^(?:~(?:[/\\]|$)|\.{1,2}[/\\]|\/|[A-Za-z]:[/\\]|\\\\)/u;
+// Address labels followed by a URL, IP, host:port, MAC, hex pointer, file path or email are not street addresses.
+const nonStreetAddress = new RegExp(
+  '^(?:' +
+    [
+      '[a-z][a-z0-9+.-]{0,31}://',
+      '(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\d.])',
+      '\\[?[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}\\]?',
+      '0x[0-9a-f]+',
+      'localhost(?![a-z0-9-])',
+      '[a-z0-9-]+(?:\\.[a-z0-9-]+)*:\\d{1,5}(?!\\d)',
+      '[a-z0-9-]+(?:\\.[a-z0-9-]+)+/',
+      '[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|io|dev|cn|ai|app|co|edu|gov|local|internal|invalid)(?![a-z0-9-])',
+      '~?/',
+      '\\.{1,2}[/\\\\]',
+      '[a-z]:\\\\',
+      '\\\\\\\\',
+      '[^\\s@]+@[^\\s@]+\\.[a-z]{2,}',
+    ].join('|') +
+    ')',
+  'iu',
+);
+const bareTokenLabels = new Set(['token', '令牌']);
+
+function isCodeValue(raw, next) {
+  if (raw.startsWith('$')) return true; // $X, ${X}, ${{ X }}, $(command)
+  if (typeNames.has(raw) || /^(?:null|undefined|true|false)$/iu.test(raw)) return true;
+  // Rust references: `&str`, `&mut String`, `&[u8]`, `&'static str`.
+  if (/^&(?:mut)?$/u.test(raw) || (raw[0] === '&' && typeNames.has(raw.slice(1)))) return true;
+  if (callExpression.test(raw)) return true; // getenv(...), process.cwd()
+  if (identifierPath.test(raw)) {
+    if (next === '[' || next === '<' || next === '(') return true; // Optional[str], env['X']
+    if (raw.includes('.') && codeRoots.has(raw.slice(0, raw.indexOf('.')))) return true;
+  }
+  return placeholder.test(raw);
+}
+// Type annotations are excluded only when they look like annotations, so `a: str = "v"` can still be checked.
+function isTypeAnnotation(raw, next) {
+  return typeNames.has(raw) || (identifierPath.test(raw) && (next === '[' || next === '<'));
+}
+
+// Skip one balanced generic/index group on the same line, e.g. `Optional[str]` or `Option<String>`.
+function skipGroup(text, position) {
+  const open = text[position];
+  const close = open === '[' ? ']' : open === '<' ? '>' : undefined;
+  if (!close) return position;
+  let depth = 0;
+  for (let i = position; i < text.length && text[i] !== '\n'; i++) {
+    if (text[i] === open) depth++;
+    else if (text[i] === close && --depth === 0) return i + 1;
+  }
+  return position;
+}
 
 // Return only the value's character range, preserving quotes, escapes outside it and syntax.
 function fieldValue(text, start, type, queryLimit) {
@@ -99,6 +182,7 @@ function fieldValue(text, start, type, queryLimit) {
     return { start, end: start + match[0].length };
   }
   let end = start;
+  let depth = 0;
   const urlQuery = queryLimit !== undefined;
   const stop = urlQuery
     ? /[\s<>"`]/u
@@ -109,6 +193,12 @@ function fieldValue(text, start, type, queryLimit) {
         : /[\s,;，；。！？<>[\]{}"'“”‘’`]/u;
   while (end < (queryLimit ?? text.length) && !stop.test(text[end])) {
     if (urlQuery && (text[end] === '#' || text[end] === '&')) break;
+    // An unbalanced closing parenthesis belongs to the surrounding code or prose, never to the value.
+    if (text[end] === '(' || text[end] === '（') depth++;
+    else if (text[end] === ')' || text[end] === '）') {
+      if (depth === 0) break;
+      depth--;
+    }
     // Preserve a following labeled field instead of swallowing the rest of the sentence.
     if (
       (type === 'NAME' || type === 'ADDRESS') &&
@@ -119,7 +209,60 @@ function fieldValue(text, start, type, queryLimit) {
     end++;
   }
   while (end > start && /[ \t]/u.test(text[end - 1])) end--;
+  // Sentence punctuation that ends the line or is followed by whitespace stays outside the value.
+  if (
+    !urlQuery &&
+    end - start > 1 &&
+    /[.!?:]/u.test(text[end - 1]) &&
+    !/[.!?:]/u.test(text[end - 2]) &&
+    (end === text.length || /\s/u.test(text[end]))
+  )
+    end--;
   return { start, end };
+}
+
+const assignment = /[ \t]*=(?![=>])[ \t]*/uy;
+const bearerProse =
+  /^(?:tokens?|auth|authentication|authorization|header|headers|scheme|schemes|credentials?|string|value|type)$/iu;
+
+// Decide the masked range for one labeled field, or undefined when the value is clearly not secret.
+function fieldSpan(text, start, type, label, queries, followAssignment) {
+  const queryLimit = type === 'CREDENTIAL' ? queryLimitAt(queries, start) : undefined;
+  const value = fieldValue(text, start, type, queryLimit);
+  if (!value) return undefined;
+  const raw = text.slice(value.start, value.end);
+  if (type === 'PHONE') {
+    const digits = raw.replace(/\D/g, '').length;
+    return /^[+\d() .-]+$/u.test(raw) && digits >= 7 && digits <= 15 ? value : undefined;
+  }
+  if (queryLimit !== undefined) return value; // URL query credentials keep the conservative rule.
+  if (type === 'ADDRESS' && nonStreetAddress.test(raw)) return undefined;
+  if (value.quoted) return reference.test(raw) || placeholder.test(raw) ? undefined : value;
+  const next = text[value.end];
+  if (isCodeValue(raw, next)) {
+    // `password: str = "literal"`: the annotation is code, but the assigned literal is still checked.
+    if (followAssignment && isTypeAnnotation(raw, next)) {
+      assignment.lastIndex = skipGroup(text, value.end);
+      const assigned = assignment.exec(text);
+      if (assigned)
+        return fieldSpan(text, assigned.index + assigned[0].length, type, label, queries, false);
+    }
+    return undefined;
+  }
+  if (type === 'CREDENTIAL') {
+    const name = label.toLowerCase();
+    if (name === 'pwd' && pathLike.test(raw)) return undefined; // working directory, not a password
+    if (bareTokenLabels.has(name) && /^\d{1,9}$/u.test(raw)) return undefined; // token counts
+  }
+  return value;
+}
+
+const residentWeights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+// GB 11643 / ISO 7064 MOD 11-2 check character.
+function residentChecksum(value) {
+  let sum = 0;
+  for (let i = 0; i < 17; i++) sum += Number(value[i]) * residentWeights[i];
+  return '10X98765432'[sum % 11] === value[17].toUpperCase();
 }
 
 const standalone = [
@@ -129,7 +272,11 @@ const standalone = [
   ],
   [
     'API_KEY',
-    /(?<![A-Za-z0-9_-])(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,})(?![A-Za-z0-9_-])/g,
+    /(?<![A-Za-z0-9_-])(?:sk-(?:(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,})|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,})(?![A-Za-z0-9_-])/g,
+    // Unprefixed `sk-` keys (OpenAI legacy, DeepSeek, DashScope, Moonshot) are one alphanumeric run
+    // mixing letters and digits; hyphenated words such as `sk-learn-contrib-x` are package names.
+    (value) =>
+      !/^sk-[A-Za-z0-9]+$/u.test(value) || (/\d/u.test(value) && /[A-Za-z]/u.test(value.slice(3))),
   ],
   ['JWT', /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g],
   [
@@ -163,7 +310,8 @@ const standalone = [
       return (
         date.getUTCFullYear() === year &&
         date.getUTCMonth() === month - 1 &&
-        date.getUTCDate() === day
+        date.getUTCDate() === day &&
+        residentChecksum(value)
       );
     },
   ],
@@ -218,29 +366,16 @@ export function createRedactor(terms = []) {
     let fieldEnd = -1;
     for (const { type, match } of fields) {
       if (match.index < fieldEnd) continue; // Do not interpret labels inside a secret value.
-      const start = match.index + match[0].length;
-      const value = fieldValue(
-        text,
-        start,
-        type,
-        type === 'CREDENTIAL' ? queryLimitAt(queries, start) : undefined,
-      );
+      const value = fieldSpan(text, match.index + match[0].length, type, match[1], queries, true);
       if (!value) continue;
-      const raw = text.slice(value.start, value.end);
-      if (
-        type === 'PHONE' &&
-        (!/^[+\d() .-]+$/u.test(raw) ||
-          raw.replace(/\D/g, '').length < 7 ||
-          raw.replace(/\D/g, '').length > 15)
-      )
-        continue;
-      if (!value.quoted && /^(?:null|undefined|true|false)$/i.test(raw)) continue;
       add(value.start, value.end, type);
       fieldEnd = value.end;
     }
     // Authorization schemes: preserve the scheme and redact only its credential.
-    for (const match of text.matchAll(/\b(Bearer[ \t]+)([A-Za-z0-9._~+/-]+={0,2})/gi))
+    for (const match of text.matchAll(/\b(Bearer[ \t]+)([A-Za-z0-9._~+/-]+={0,2})/gi)) {
+      if (bearerProse.test(match[2]) || placeholder.test(match[2])) continue; // "a Bearer token"
       add(match.index + match[1].length, match.index + match[0].length, 'BEARER');
+    }
     for (const match of text.matchAll(
       /\b(Authorization["']?[ \t]*[:=：][ \t]*["']?Basic[ \t]+)([A-Za-z0-9+/]{4,}={0,2})/gi,
     ))
@@ -300,13 +435,36 @@ export function createRedactor(terms = []) {
   };
 }
 
-export function redactMessages(messages, redact) {
-  return messages.map((message) => ({
-    ...message,
-    content: message.content.map((block) => {
-      if (block.type === 'text') return { ...block, text: redact(block.text).text };
+// DSH message sources produced by agents from already-admitted input: send_message/team relays
+// (`agent-message`) and background-subagent completion notices (`subagent-settled`).
+export const AGENT_MESSAGE_SOURCES = Object.freeze(['agent-message', 'subagent-settled']);
+const agentSources = new Set(AGENT_MESSAGE_SOURCES);
+
+// Whether admission masks this message. The loop re-renders `runtime-context` from local runtime
+// facts on every step, so masking it would be discarded and is never attempted.
+export function shouldRedact(message, { redactAgentMessages = false } = {}) {
+  const kind = message?.source?.kind;
+  if (kind === 'runtime-context') return false;
+  return redactAgentMessages || !agentSources.has(kind);
+}
+
+// Unchanged messages, blocks and arrays are returned as the same objects.
+export function redactMessages(messages, redact, options) {
+  let changed = false;
+  const result = messages.map((message) => {
+    if (!shouldRedact(message, options)) return message;
+    let blockChanged = false;
+    const content = message.content.map((block) => {
       // Attachments and unknown content pass unchanged, not inspected or rejected.
-      return block;
-    }),
-  }));
+      if (block.type !== 'text') return block;
+      const masked = redact(block.text);
+      if (!masked.changed) return block;
+      blockChanged = true;
+      return { ...block, text: masked.text };
+    });
+    if (!blockChanged) return message;
+    changed = true;
+    return { ...message, content };
+  });
+  return changed ? result : messages;
 }

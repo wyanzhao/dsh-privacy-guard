@@ -8,7 +8,7 @@ import { createRedactor, validateDictionary, redactMessages } from '../redactor.
 import { apply, version } from '../index.js';
 const r = createRedactor();
 const samples = [
-  'sk-' + 'a'.repeat(32),
+  'sk-' + 'a1B2'.repeat(8),
   'ghp_' + 'a'.repeat(30),
   'AKIA' + 'A'.repeat(16),
   'Bearer ' + 'a'.repeat(20),
@@ -19,7 +19,7 @@ const samples = [
   'person' + '@example.invalid',
   '138' + '00138000',
   '+1 (415) 555-0100',
-  '11010519900101001X',
+  '11010519900101007X',
   '姓名：虚构测试人',
   'full name: Synthetic Person',
   '地址：虚构测试路一号',
@@ -63,7 +63,7 @@ test('natural-language credentials are masked in preview and admission', async (
 });
 test('a whole secret is replaced by exactly one character, regardless of length', () => {
   assert.equal(r(samples[0]).text, '*');
-  assert.equal(r('sk-' + 'z'.repeat(200)).text, '*');
+  assert.equal(r('sk-' + 'z7'.repeat(100)).text, '*');
   assert.deepEqual(JSON.parse(r(samples[6]).text), { password: '*' });
   assert.equal(r('姓名：虚构测试人').text, '姓名：*');
 });

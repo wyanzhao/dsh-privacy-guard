@@ -4,14 +4,20 @@ import { createRedactor, validateDictionary } from './redactor.js';
 export const MAX_DICTIONARY_BYTES = 1024 * 1024;
 const warning = '词库读取失败：沿用本次运行最后可用词库；若尚无可用词库则仅使用内置规则。';
 
+// Identity of the opened file: a rewrite, replacement or touch changes at least one field.
+const fileKey = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+
 // Open nonblocking where available, reject non-regular files, and bound ACTUAL
 // reads rather than relying only on a path stat that may change before opening.
-function readDictionary(path) {
+// Returns `{ key }` alone when the opened file still matches `knownKey`.
+function readDictionary(path, knownKey) {
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_DICTIONARY_BYTES)
       throw new Error('Invalid dictionary file.');
+    const key = fileKey(stat);
+    if (key === knownKey) return { key };
     const buffer = Buffer.alloc(Math.min(MAX_DICTIONARY_BYTES + 1, stat.size + 1));
     let used = 0;
     while (used < buffer.length) {
@@ -21,7 +27,10 @@ function readDictionary(path) {
     }
     if (used > MAX_DICTIONARY_BYTES || used > stat.size)
       throw new Error('Dictionary changed while reading.');
-    return validateDictionary(JSON.parse(buffer.subarray(0, used).toString('utf8')));
+    return {
+      key,
+      terms: validateDictionary(JSON.parse(buffer.subarray(0, used).toString('utf8'))),
+    };
   } finally {
     closeSync(fd);
   }
@@ -29,19 +38,21 @@ function readDictionary(path) {
 
 export function createDictionaryLoader(path, { optional = false } = {}) {
   let redact = createRedactor();
-  let hasValidDictionary = false;
+  let loadedKey; // Set only after a successful load; the compiled redactor is reused while it matches.
   return function load() {
     try {
-      const next = createRedactor(readDictionary(path));
-      redact = next;
-      hasValidDictionary = true;
+      const { key, terms } = readDictionary(path, loadedKey);
+      if (terms) {
+        redact = createRedactor(terms);
+        loadedKey = key;
+      }
       return { redact, warning: '', configured: true };
     } catch (error) {
-      if (optional && !hasValidDictionary && error?.code === 'ENOENT') {
+      if (optional && loadedKey === undefined && error?.code === 'ENOENT') {
         return { redact, warning: '', configured: false };
       }
       // Never return parser errors, raw terms, sensitive paths, or stack traces.
-      return { redact, warning, configured: hasValidDictionary };
+      return { redact, warning, configured: loadedKey !== undefined };
     }
   };
 }

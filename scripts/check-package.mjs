@@ -109,7 +109,7 @@ try {
   assert.equal(status.kind, 'success');
   assert.ok(status.text.includes(version));
   assert.equal(status.text.includes('读取失败'), false);
-  const secret = 'sk-' + 'a'.repeat(32);
+  const secret = 'sk-' + 'a1B2'.repeat(8);
   const admitted = await events.get('agent/pre-step')({}, async () => ({
     kind: 'enter',
     messages: [{ role: 'user', content: [{ type: 'text', text: secret }] }],

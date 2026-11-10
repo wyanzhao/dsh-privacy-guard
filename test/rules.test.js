@@ -14,7 +14,7 @@ function expectMask(label, input, expected, terms) {
   });
 }
 const keys = [
-  'sk-' + 'a'.repeat(32),
+  'sk-' + 'a1B2'.repeat(8),
   'sk-proj-' + 'a'.repeat(40) + '-',
   'sk-ant-' + 'a'.repeat(40) + '_',
   ...['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'hf_', 'npm_'].map(
@@ -196,7 +196,7 @@ for (const input of [
   'alice..tag@example.invalid',
   'alice@example..invalid',
   'sk-short',
-  'prefixsk-' + 'a'.repeat(32),
+  'prefixsk-' + 'a1B2'.repeat(8),
   'AKIA' + 'A'.repeat(15),
   '-----BEGIN PUBLIC KEY-----synthetic-----END PUBLIC KEY-----',
   '-----BEGIN CERTIFICATE-----synthetic-----END CERTIFICATE-----',
@@ -271,7 +271,7 @@ expectMask(
 );
 expectMask(
   'dictionary prefix cannot hide a newly exposed known key',
-  'prefixsk-' + 'a'.repeat(32),
+  'prefixsk-' + 'a1B2'.repeat(8),
   '**',
   ['prefix'],
 );
